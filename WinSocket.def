@@ -1,0 +1,15 @@
+LIBRARY	"WinSocket"
+EXPORTS
+socket_init @1 
+socket_server @2 
+socket_server_close @3 
+socket_server_get_port @4 
+socket_server_send @5 
+socket_server_sends @6 
+socket_server_stop @7 
+socket_client @8 
+socket_client_close @9 
+socket_client_send @10 
+socket_client_get @11 
+
+
