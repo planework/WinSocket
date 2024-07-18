@@ -1,1 +1,1 @@
-g++ -shared -o WinSocket.dll WinSocket.cpp WinSocket.def -lws2_32
+g++ -shared -static -o WinSocket.dll WinSocket.cpp WinSocket.def -lws2_32 -static-libgcc -static-libstdc++ -DWIN32_LEAN_AND_MEAN
