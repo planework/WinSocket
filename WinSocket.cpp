@@ -2,7 +2,7 @@
 #include <windows.h>
 #include <WinSock2.h>
 #pragma comment(lib, "WS2_32.lib")
-#ifndef _MSC_VER
+#ifndef _MSC_VER // 感谢群友 fox 提供
 #pragma comment(lib, "msvcrt.lib")
 #endif
 #include <mswsock.h>
