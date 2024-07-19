@@ -2,13 +2,19 @@
 #include <windows.h>
 #include <WinSock2.h>
 #pragma comment(lib, "WS2_32.lib")
+#ifndef _MSC_VER
 #pragma comment(lib, "msvcrt.lib")
+#endif
 #include <mswsock.h>
 #include <MSTcpIP.h>
 #include <process.h>
 int worker = 0;
 int cache = 8192;
-
+#define io_connt 1
+#define io_recv 2
+#define io_stop 3
+#define io_send 4
+#define io_close 5
 typedef void(__stdcall *onServer_ex)(HANDLE Server, SOCKET hSocket, int type, char *data, int len);
 typedef void(__stdcall *onClient_ex)(HANDLE Client, SOCKET hSocket, int type, char *data, int len);
 
@@ -44,13 +50,6 @@ int closesockets(SOCKET hSocket)
 }
 
 class SERVER;
-
-#define io_server_connt 1
-#define io_server_recv 2
-#define io_server_stop 3
-#define io_server_send 4
-#define io_server_close 5
-
 typedef struct SERVER_ST
 {
 	OVERLAPPED Socket_ST;
@@ -69,7 +68,7 @@ public:
 	~SERVER(void);
 
 public:
-	int Init(char *host, unsigned short nPort, int mete);
+	int Init(char *host, unsigned short port, int mete);
 	int Accept();
 	void onAccept(bool stop, PS_SERVER Socket_ST);
 	void onRecv(bool stop, PS_SERVER Socket_ST);
@@ -159,7 +158,7 @@ int SERVER::Init(char *host, unsigned short port, int mete)
 	Socket_ST->instance = this;
 	Socket_ST->size = cache;
 	Socket_ST->offset = 0;
-	Socket_ST->state = io_server_connt;
+	Socket_ST->state = io_connt;
 	Socket_ST->hSocket = INVALID_SOCKET;
 	Socket_ST->hSocket = WSASocket(AF_INET, SOCK_STREAM, IPPROTO_TCP, 0, 0, WSA_FLAG_OVERLAPPED);
 
@@ -245,7 +244,7 @@ int SERVER::Accept()
 	Socket_ST->instance = this;
 	Socket_ST->size = cache;
 	Socket_ST->offset = 0;
-	Socket_ST->state = io_server_connt;
+	Socket_ST->state = io_connt;
 	Socket_ST->hSocket = WSASocket(AF_INET, SOCK_STREAM, IPPROTO_TCP, 0, 0, WSA_FLAG_OVERLAPPED);
 
 	if (INVALID_SOCKET == Socket_ST->hSocket)
@@ -327,10 +326,10 @@ void SERVER::onAccept(bool stop, PS_SERVER PS)
 	DWORD bytesReturned = 0;
 	DWORD Flags = 0;
 	WSAIoctl(PS->hSocket, SIO_KEEPALIVE_VALS, &keepAliveParams, sizeof(keepAliveParams), NULL, 0, &bytesReturned, NULL, NULL);
-	onServerFunc(this, PS->hSocket, io_server_connt, NULL, 0);
+	onServerFunc(this, PS->hSocket, io_connt, NULL, 0);
 	if (stop)
 	{
-		onServerFunc(this, PS->hSocket, io_server_close, NULL, 0);
+		onServerFunc(this, PS->hSocket, io_close, NULL, 0);
 		closesocket(PS->hSocket);
 		PS->hSocket = INVALID_SOCKET;
 		delete[] PS->data;
@@ -340,7 +339,7 @@ void SERVER::onAccept(bool stop, PS_SERVER PS)
 		return;
 	}
 
-	PS->state = io_server_recv;
+	PS->state = io_recv;
 
 	WSABUF wsabuf;
 	if (m_mate)
@@ -371,7 +370,7 @@ void SERVER::onAccept(bool stop, PS_SERVER PS)
 
 		else if (code != WSA_IO_PENDING)
 		{
-			onServerFunc(this, PS->hSocket, io_server_close, NULL, 0);
+			onServerFunc(this, PS->hSocket, io_close, NULL, 0);
 			closesocket(PS->hSocket);
 			PS->hSocket = INVALID_SOCKET;
 			delete[] PS->data;
@@ -386,7 +385,7 @@ void SERVER::onRecv(bool stop, PS_SERVER PS)
 {
 	if (stop)
 	{
-		onServerFunc(this, PS->hSocket, io_server_close, 0, 0);
+		onServerFunc(this, PS->hSocket, io_close, 0, 0);
 		delete[] PS->data;
 		delete PS;
 		PS = NULL;
@@ -399,7 +398,7 @@ void SERVER::onRecv(bool stop, PS_SERVER PS)
 	{
 		if (PS->offset < PS->size)
 		{
-			PS->state = io_server_recv;
+			PS->state = io_recv;
 			WSABUF wsabuf;
 			wsabuf.buf = PS->data + PS->offset;
 			wsabuf.len = PS->size - PS->offset;
@@ -410,7 +409,7 @@ void SERVER::onRecv(bool stop, PS_SERVER PS)
 				int code = WSAGetLastError();
 				if (code != WSA_IO_PENDING && code != WSAEFAULT)
 				{
-					onServerFunc(this, PS->hSocket, io_server_close, 0, 0);
+					onServerFunc(this, PS->hSocket, io_close, 0, 0);
 					delete[] PS->data;
 					PS->data = NULL;
 					delete PS;
@@ -424,7 +423,7 @@ void SERVER::onRecv(bool stop, PS_SERVER PS)
 		DWORD size = *((DWORD *)(PS->data));
 		if (size > 65536000)
 		{
-			onServerFunc(this, PS->hSocket, io_server_close, 0, 0);
+			onServerFunc(this, PS->hSocket, io_close, 0, 0);
 			delete[] PS->data;
 			PS->data = NULL;
 			delete PS;
@@ -438,7 +437,7 @@ void SERVER::onRecv(bool stop, PS_SERVER PS)
 
 			if (!newData)
 			{
-				onServerFunc(this, PS->hSocket, io_server_close, 0, 0);
+				onServerFunc(this, PS->hSocket, io_close, 0, 0);
 				delete[] PS->data;
 				PS->data = NULL;
 				delete PS;
@@ -461,7 +460,7 @@ void SERVER::onRecv(bool stop, PS_SERVER PS)
 				int code = WSAGetLastError();
 				if (code != WSA_IO_PENDING && code != WSAEFAULT)
 				{
-					onServerFunc(this, PS->hSocket, io_server_close, 0, 0);
+					onServerFunc(this, PS->hSocket, io_close, 0, 0);
 					delete[] PS->data;
 					PS->data = NULL;
 					delete PS;
@@ -474,7 +473,7 @@ void SERVER::onRecv(bool stop, PS_SERVER PS)
 
 		if (PS->size > sizeof(DWORD))
 		{
-			onServerFunc(this, PS->hSocket, io_server_recv, PS->data + sizeof(DWORD), PS->size - sizeof(DWORD));
+			onServerFunc(this, PS->hSocket, io_recv, PS->data + sizeof(DWORD), PS->size - sizeof(DWORD));
 		}
 
 		delete[] PS->data;
@@ -484,11 +483,11 @@ void SERVER::onRecv(bool stop, PS_SERVER PS)
 	else
 	{
 
-		onServerFunc(this, PS->hSocket, io_server_recv, PS->data, PS->bytes);
+		onServerFunc(this, PS->hSocket, io_recv, PS->data, PS->bytes);
 	}
 
 	PS->offset = 0;
-	PS->state = io_server_recv;
+	PS->state = io_recv;
 	WSABUF wsabuf;
 	if (m_mate)
 	{
@@ -509,7 +508,7 @@ void SERVER::onRecv(bool stop, PS_SERVER PS)
 		if (code != WSA_IO_PENDING && code != WSAEFAULT)
 		{
 
-			onServerFunc(this, PS->hSocket, io_server_close, 0, 0);
+			onServerFunc(this, PS->hSocket, io_close, 0, 0);
 			delete[] PS->data;
 			delete PS;
 			PS = NULL;
@@ -526,7 +525,7 @@ int SERVER::send_async(SOCKET hSocket, char *data, DWORD size)
 	SERVER_ST *Socket_ST = new SERVER_ST;
 	memset(Socket_ST, 0, sizeof(SERVER_ST));
 	Socket_ST->instance = this;
-	Socket_ST->state = io_server_send;
+	Socket_ST->state = io_send;
 	Socket_ST->offset = 0;
 	WSABUF wsabuf;
 	if (m_mate)
@@ -596,17 +595,13 @@ void SERVER::onSend(bool stop, PS_SERVER PS)
 	if (stop)
 	{
 		closesocket(hSocket);
-		onServerFunc(this, hSocket, io_server_stop, 0, 0);
+		onServerFunc(this, hSocket, io_stop, 0, 0);
 		hSocket = INVALID_SOCKET;
 	}
 }
 
 class CLIENT;
-#define io_client_connt 1
-#define io_client_recv 2
-#define io_client_stop 3
-#define io_client_send 4
-#define io_client_close 5
+
 typedef struct CLIENT_ST
 {
 	OVERLAPPED Socket_ST;
@@ -693,7 +688,7 @@ int CLIENT::Init(char *host, unsigned short port, BOOL mate, int time)
 	CLIENT_ST *Socket_ST = new CLIENT_ST;
 	memset(Socket_ST, 0, sizeof(CLIENT_ST));
 	Socket_ST->instance = this;
-	Socket_ST->state = io_client_connt;
+	Socket_ST->state = io_connt;
 	Socket_ST->data = NULL;
 	Socket_ST->size = 0;
 	Socket_ST->offset = 0;
@@ -705,7 +700,7 @@ void CLIENT::OnConnect(bool ercode, PS_CLIENT Socket_ST)
 {
 	setsockopt(m_hSocket, SOL_SOCKET, 0x7010, NULL, 0);
 
-	onClientFunc(this, m_hSocket, io_client_connt, NULL, 0);
+	onClientFunc(this, m_hSocket, io_connt, NULL, 0);
 
 	if (ercode)
 	{
@@ -726,7 +721,7 @@ void CLIENT::OnConnect(bool ercode, PS_CLIENT Socket_ST)
 		Socket_ST->size = cache;
 	}
 
-	Socket_ST->state = io_client_recv;
+	Socket_ST->state = io_recv;
 	Socket_ST->offset = 0;
 
 	if (1 == Recv(Socket_ST))
@@ -779,7 +774,7 @@ void CLIENT::onRecv(bool stop, PS_CLIENT Socket_ST)
 
 		if (Socket_ST->size - sizeof(DWORD) > 0)
 		{
-			onClientFunc(this, m_hSocket, io_client_recv, Socket_ST->data + sizeof(DWORD), Socket_ST->size - sizeof(DWORD));
+			onClientFunc(this, m_hSocket, io_recv, Socket_ST->data + sizeof(DWORD), Socket_ST->size - sizeof(DWORD));
 		}
 		delete[] Socket_ST->data;
 		Socket_ST->data = NULL;
@@ -788,7 +783,7 @@ void CLIENT::onRecv(bool stop, PS_CLIENT Socket_ST)
 	}
 	else
 	{
-		onClientFunc(this, m_hSocket, io_client_recv, Socket_ST->data, Socket_ST->bytes);
+		onClientFunc(this, m_hSocket, io_recv, Socket_ST->data, Socket_ST->bytes);
 	}
 
 	Socket_ST->offset = 0;
@@ -803,7 +798,7 @@ void CLIENT::onRecv(bool stop, PS_CLIENT Socket_ST)
 int CLIENT::Recv(PS_CLIENT Socket_ST)
 {
 	Socket_ST->instance = this;
-	Socket_ST->state = io_client_recv;
+	Socket_ST->state = io_recv;
 	WSABUF wsabuf;
 	wsabuf.buf = Socket_ST->data + Socket_ST->offset;
 	wsabuf.len = Socket_ST->size - Socket_ST->offset;
@@ -831,7 +826,7 @@ void CLIENT::onClose(bool ercode, PS_CLIENT Socket_ST)
 	Socket_ST->data = NULL;
 	delete Socket_ST;
 	Socket_ST = NULL;
-	onClientFunc(this, m_hSocket, io_client_stop, NULL, 0);
+	onClientFunc(this, m_hSocket, io_stop, NULL, 0);
 	Close();
 }
 
@@ -853,7 +848,7 @@ int CLIENT::send_async(char *data, DWORD size)
 	CLIENT_ST *Socket_ST = new CLIENT_ST;
 	memset(Socket_ST, 0, sizeof(CLIENT_ST));
 	Socket_ST->instance = this;
-	Socket_ST->state = io_client_send;
+	Socket_ST->state = io_send;
 
 	WSABUF wsabuf;
 
@@ -949,7 +944,7 @@ unsigned __stdcall Worker_server(void *pParam)
 		}
 
 		SERVER *so = Socket_ST->instance;
-		if (Socket_ST->state == io_server_recv && bytes <= 0)
+		if (Socket_ST->state == io_recv && bytes <= 0)
 		{
 			stop = true;
 		}
@@ -964,13 +959,13 @@ unsigned __stdcall Worker_server(void *pParam)
 
 		switch (Socket_ST->state)
 		{
-		case io_server_connt:
+		case io_connt:
 			so->onAccept(stop, Socket_ST);
 			break;
-		case io_server_recv:
+		case io_recv:
 			so->onRecv(stop, Socket_ST);
 			break;
-		case io_server_send:
+		case io_send:
 			so->onSend(stop, Socket_ST);
 			break;
 		}
@@ -996,7 +991,7 @@ unsigned __stdcall Worker_client(void *pParam)
 		}
 
 		CLIENT *so = Socket_ST->instance;
-		if (Socket_ST->state == io_client_recv && bytes <= 0)
+		if (Socket_ST->state == io_recv && bytes <= 0)
 		{
 			stop = true;
 		}
@@ -1005,13 +1000,13 @@ unsigned __stdcall Worker_client(void *pParam)
 
 		switch (Socket_ST->state)
 		{
-		case io_client_connt:
+		case io_connt:
 			so->OnConnect(stop, Socket_ST);
 			break;
-		case io_client_recv:
+		case io_recv:
 			so->onRecv(stop, Socket_ST);
 			break;
-		case io_client_send:
+		case io_send:
 			so->onSend(stop, Socket_ST);
 			break;
 		}
