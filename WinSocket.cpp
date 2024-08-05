@@ -1,13 +1,10 @@
 #include <SDKDDKVer.h>
-#include <windows.h>
 #include <WinSock2.h>
-#pragma comment(lib, "WS2_32.lib")
-#ifndef _MSC_VER // 感谢群友 fox 提供
-#pragma comment(lib, "msvcrt.lib")
-#endif
 #include <mswsock.h>
 #include <MSTcpIP.h>
 #include <process.h>
+#include <stdio.h>
+#include <map>
 int worker = 0;
 int cache = 8192;
 #define io_connt 1
@@ -15,13 +12,22 @@ int cache = 8192;
 #define io_stop 3
 #define io_send 4
 #define io_close 5
-typedef void(__stdcall *onServer_ex)(HANDLE Server, SOCKET hSocket, int type, char *data, int len);
-typedef void(__stdcall *onClient_ex)(HANDLE Client, SOCKET hSocket, int type, char *data, int len);
 
+typedef void(__stdcall *onSocket)(HANDLE Server, SOCKET hSocket, int type, char *data, int size);
+HANDLE hServer;
+HANDLE hClient;
 HANDLE hEvent_Server = NULL;
 HANDLE hEvent_Client = NULL;
-onServer_ex onServerFunc = NULL;
-onClient_ex onClientFunc = NULL;
+onSocket onServerFunc = NULL;
+onSocket onClientFunc = NULL;
+
+char *gethostnames(SOCKET socket)
+{
+	sockaddr_in pSockaddr;
+	int size = sizeof(pSockaddr);
+	getsockname(socket, (sockaddr *)&pSockaddr, &size);
+	return inet_ntoa(pSockaddr.sin_addr);
+}
 
 int closesockets(SOCKET hSocket)
 {
@@ -34,17 +40,9 @@ int closesockets(SOCKET hSocket)
 	lingerStruct.l_onoff = 1;
 	lingerStruct.l_linger = 0;
 
-	int result = setsockopt(hSocket, SOL_SOCKET, SO_LINGER, (char *)&lingerStruct, sizeof(lingerStruct));
-	if (result == SOCKET_ERROR)
-	{
-		return SOCKET_ERROR;
-	}
+	int code = setsockopt(hSocket, SOL_SOCKET, SO_LINGER, (char *)&lingerStruct, sizeof(lingerStruct));
 
-	result = shutdown(hSocket, SD_BOTH);
-	if (result == SOCKET_ERROR)
-	{
-		return SOCKET_ERROR;
-	}
+	code = shutdown(hSocket, SD_BOTH);
 
 	return closesocket(hSocket);
 }
@@ -80,27 +78,7 @@ public:
 	{
 		return m_hSocket;
 	}
-	char *get_ip(SOCKET hSocket)
-	{
-		sockaddr_in pSockaddr;
-		int size = sizeof(pSockaddr);
-		getpeername(hSocket, (sockaddr *)&pSockaddr, &size);
-		return inet_ntoa(pSockaddr.sin_addr);
-	}
-	u_short get_port()
-	{
-		sockaddr_in pSockaddr;
-		int size = sizeof(pSockaddr);
-		getsockname(m_hSocket, (sockaddr *)&pSockaddr, &size);
-		return ntohs(pSockaddr.sin_port);
-	}
-	char *get_addr(SOCKET m_hSocket)
-	{
-		sockaddr_in pSockaddr;
-		int size = sizeof(pSockaddr);
-		getsockname(m_hSocket, (sockaddr *)&pSockaddr, &size);
-		return inet_ntoa(pSockaddr.sin_addr);
-	}
+
 
 public:
 	SOCKET m_hSocket;
@@ -325,7 +303,9 @@ void SERVER::onAccept(bool stop, PS_SERVER PS)
 	keepAliveParams.keepaliveinterval = 1000 * 5;
 	DWORD bytesReturned = 0;
 	DWORD Flags = 0;
+
 	WSAIoctl(PS->hSocket, SIO_KEEPALIVE_VALS, &keepAliveParams, sizeof(keepAliveParams), NULL, 0, &bytesReturned, NULL, NULL);
+
 	onServerFunc(this, PS->hSocket, io_connt, NULL, 0);
 	if (stop)
 	{
@@ -381,12 +361,14 @@ void SERVER::onAccept(bool stop, PS_SERVER PS)
 		}
 	}
 }
+
 void SERVER::onRecv(bool stop, PS_SERVER PS)
 {
 	if (stop)
 	{
 		onServerFunc(this, PS->hSocket, io_close, 0, 0);
 		delete[] PS->data;
+		PS->data = NULL;
 		delete PS;
 		PS = NULL;
 		return;
@@ -510,6 +492,7 @@ void SERVER::onRecv(bool stop, PS_SERVER PS)
 
 			onServerFunc(this, PS->hSocket, io_close, 0, 0);
 			delete[] PS->data;
+			PS->data = NULL;
 			delete PS;
 			PS = NULL;
 		}
@@ -544,7 +527,7 @@ int SERVER::send_async(SOCKET hSocket, char *data, DWORD size)
 	}
 	if (WSASend(hSocket, &wsabuf, 1, &Socket_ST->bytes, 0, (LPWSAOVERLAPPED)Socket_ST, NULL))
 	{
-		if ( WSAGetLastError() != WSA_IO_PENDING)
+		if (WSAGetLastError() != WSA_IO_PENDING)
 		{
 			delete[] Socket_ST->data;
 			Socket_ST->data = NULL;
@@ -553,7 +536,7 @@ int SERVER::send_async(SOCKET hSocket, char *data, DWORD size)
 			return 1;
 		}
 	}
-
+	
 	return 0;
 }
 
@@ -607,6 +590,7 @@ typedef struct CLIENT_ST
 	OVERLAPPED Socket_ST;
 	CLIENT *instance;
 	int state;
+	SOCKET hSocket;
 	char *data;
 	DWORD bytes;
 	DWORD size;
@@ -661,25 +645,17 @@ int CLIENT::Init(char *host, unsigned short port, BOOL mate, int time)
 	}
 	sockaddr_in pSockaddr;
 	pSockaddr.sin_family = AF_INET;
-	pSockaddr.sin_addr.s_addr = 0;
-	pSockaddr.sin_port = 0;
-	if (bind(m_hSocket, (SOCKADDR *)&pSockaddr, sizeof(pSockaddr)) == SOCKET_ERROR)
-	{
-		Close();
-		return WSAGetLastError();
-	}
-	pSockaddr.sin_family = AF_INET;
 	pSockaddr.sin_addr.s_addr = inet_addr(host);
 	pSockaddr.sin_port = htons(port);
-	unsigned long ul = 1;
-	ioctlsocket(m_hSocket, FIONBIO, (unsigned long *)&ul);
+	unsigned long on = 0;
+	ioctlsocket(m_hSocket, FIONBIO, &on);
 	connect(m_hSocket, (sockaddr *)&pSockaddr, sizeof(sockaddr));
 	struct timeval timeout;
 	fd_set r;
 	FD_ZERO(&r);
 	FD_SET(m_hSocket, &r);
-	timeout.tv_sec = time;
-	timeout.tv_usec = 0;
+	timeout.tv_sec = 0;
+	timeout.tv_usec = time * 1000;
 	if (select(m_hSocket, 0, &r, 0, &timeout) <= 0)
 	{
 		Close();
@@ -696,15 +672,15 @@ int CLIENT::Init(char *host, unsigned short port, BOOL mate, int time)
 	return 0;
 }
 
-void CLIENT::OnConnect(bool ercode, PS_CLIENT Socket_ST)
+void CLIENT::OnConnect(bool stop, PS_CLIENT Socket_ST)
 {
 	setsockopt(m_hSocket, SOL_SOCKET, 0x7010, NULL, 0);
 
 	onClientFunc(this, m_hSocket, io_connt, NULL, 0);
 
-	if (ercode)
+	if (stop)
 	{
-		onClose(ercode, Socket_ST);
+		onClose(stop, Socket_ST);
 		return;
 	}
 
@@ -726,7 +702,7 @@ void CLIENT::OnConnect(bool ercode, PS_CLIENT Socket_ST)
 
 	if (1 == Recv(Socket_ST))
 	{
-		onClose(ercode, Socket_ST);
+		onClose(stop, Socket_ST);
 		return;
 	}
 }
@@ -820,7 +796,7 @@ int CLIENT::Recv(PS_CLIENT Socket_ST)
 	return 0;
 }
 
-void CLIENT::onClose(bool ercode, PS_CLIENT Socket_ST)
+void CLIENT::onClose(bool stop, PS_CLIENT Socket_ST)
 {
 	delete[] Socket_ST->data;
 	Socket_ST->data = NULL;
@@ -843,7 +819,6 @@ int CLIENT::send_async(char *data, DWORD size)
 	{
 		return 1;
 	}
-
 
 	CLIENT_ST *Socket_ST = new CLIENT_ST;
 	memset(Socket_ST, 0, sizeof(CLIENT_ST));
@@ -943,7 +918,7 @@ unsigned __stdcall Worker_server(void *pParam)
 			stop = true;
 		}
 
-		SERVER *so = Socket_ST->instance;
+		SERVER *instance = Socket_ST->instance;
 		if (Socket_ST->state == io_recv && bytes <= 0)
 		{
 			stop = true;
@@ -951,22 +926,22 @@ unsigned __stdcall Worker_server(void *pParam)
 
 		Socket_ST->bytes = bytes;
 
-		if (so->m_stop)
+		if (instance->m_stop)
 		{
-			so->onSend(true, Socket_ST);
+			instance->onSend(true, Socket_ST);
 			continue;
 		}
 
 		switch (Socket_ST->state)
 		{
 		case io_connt:
-			so->onAccept(stop, Socket_ST);
+			instance->onAccept(stop, Socket_ST);
 			break;
 		case io_recv:
-			so->onRecv(stop, Socket_ST);
+			instance->onRecv(stop, Socket_ST);
 			break;
 		case io_send:
-			so->onSend(stop, Socket_ST);
+			instance->onSend(stop, Socket_ST);
 			break;
 		}
 	}
@@ -975,7 +950,6 @@ unsigned __stdcall Worker_server(void *pParam)
 	return 0;
 }
 
-// Client worker function
 unsigned __stdcall Worker_client(void *pParam)
 {
 	while (true)
@@ -984,30 +958,26 @@ unsigned __stdcall Worker_client(void *pParam)
 		ULONG_PTR key = 0;
 		CLIENT_ST *Socket_ST = NULL;
 		bool stop = false;
-
 		if (!GetQueuedCompletionStatus(hEvent_Client, &bytes, &key, (LPOVERLAPPED *)&Socket_ST, INFINITE))
 		{
 			stop = true;
 		}
-
-		CLIENT *so = Socket_ST->instance;
+		CLIENT *instance = Socket_ST->instance;
 		if (Socket_ST->state == io_recv && bytes <= 0)
 		{
 			stop = true;
 		}
-
 		Socket_ST->bytes = bytes;
-
 		switch (Socket_ST->state)
 		{
 		case io_connt:
-			so->OnConnect(stop, Socket_ST);
+			instance->OnConnect(stop, Socket_ST);
 			break;
 		case io_recv:
-			so->onRecv(stop, Socket_ST);
+			instance->onRecv(stop, Socket_ST);
 			break;
 		case io_send:
-			so->onSend(stop, Socket_ST);
+			instance->onSend(stop, Socket_ST);
 			break;
 		}
 	}
@@ -1016,7 +986,7 @@ unsigned __stdcall Worker_client(void *pParam)
 	return 0;
 }
 
-extern "C" __declspec(dllexport) int __stdcall socket_init(onServer_ex nFun, onClient_ex cFun)
+extern "C" __declspec(dllexport) int __stdcall socket_init(onSocket callback)
 {
 	WSAData wsa;
 	if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0)
@@ -1024,8 +994,8 @@ extern "C" __declspec(dllexport) int __stdcall socket_init(onServer_ex nFun, onC
 		return WSAGetLastError();
 	}
 
-	onServerFunc = nFun;
-	onClientFunc = cFun;
+	onServerFunc = callback;
+	onClientFunc = callback;
 
 	hEvent_Server = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, 0, 0);
 	if (hEvent_Server == NULL)
@@ -1047,10 +1017,10 @@ extern "C" __declspec(dllexport) int __stdcall socket_init(onServer_ex nFun, onC
 	{
 		worker = 5;
 	}
-
+	HANDLE threadHandle;
 	for (int i = 0; i < worker; i++)
 	{
-		HANDLE threadHandle = (HANDLE)_beginthreadex(NULL, 0, &Worker_server, NULL, 0, NULL);
+		threadHandle = (HANDLE)_beginthreadex(NULL, 0, &Worker_server, NULL, 0, NULL);
 		if (threadHandle != NULL)
 		{
 			CloseHandle(threadHandle);
@@ -1075,32 +1045,31 @@ extern "C" __declspec(dllexport) int __stdcall socket_server(char *host, unsigne
 		dServer = NULL;
 		return 0;
 	}
-	// 编译的时候需要注释上面返回 并且返回真实指针地址
 	return (long long)dServer;
 }
-extern "C" __declspec(dllexport) int __stdcall socket_server_send_async(HANDLE hSocket, SOCKET so, char *buf, int len)
-{
-	return ((SERVER *)hSocket)->send_async(so, buf, len);
-}
-extern "C" __declspec(dllexport) int __stdcall socket_server_send_sync(HANDLE hSocket, SOCKET so, char *buf, int len)
-{
-	return ((SERVER *)hSocket)->send_sync(so, buf, len);
-}
-extern "C" __declspec(dllexport) int __stdcall socket_server_get_port(HANDLE hSocket)
-{
-	return ((SERVER *)hSocket)->get_port();
-}
-char *__stdcall socket_server_get_ip(HANDLE hSocket, SOCKET so)
-{
-	return ((SERVER *)hSocket)->get_ip(so);
-}
-SOCKET __stdcall socket_server_get_socket(HANDLE hSocket)
+
+extern "C" __declspec(dllexport) int __stdcall socket_server_get(HANDLE hSocket)
 {
 	return ((SERVER *)hSocket)->get_socket();
 }
+
+extern "C" __declspec(dllexport) char *__stdcall socket_hostname(SOCKET socket)
+{
+	return gethostnames(socket);
+}
+
 extern "C" __declspec(dllexport) int __stdcall socket_server_close(SOCKET hSocket)
 {
 	return closesockets(hSocket);
+}
+
+extern "C" __declspec(dllexport) int __stdcall socket_server_send_async(HANDLE hSocket, SOCKET so, char *data, int size)
+{
+	return ((SERVER *)hSocket)->send_async(so, data, size);
+}
+extern "C" __declspec(dllexport) int __stdcall socket_server_send_sync(HANDLE hSocket, SOCKET so, char *data, int size)
+{
+	return ((SERVER *)hSocket)->send_sync(so, data, size);
 }
 
 extern "C" __declspec(dllexport) int __stdcall socket_server_stop(HANDLE hSocket)
@@ -1125,8 +1094,20 @@ extern "C" __declspec(dllexport) int __stdcall socket_client(char *host, unsigne
 		dClient = NULL;
 		return 0;
 	}
-	// 编译的时候需要注释上面返回 并且返回真实指针地址
 	return (long long)dClient;
+}
+
+extern "C" __declspec(dllexport) int __stdcall socket_client_stop(HANDLE hSocket)
+{
+	if (IsBadReadPtr(hSocket, 4) != 0)
+	{
+		return 0;
+	}
+	CLIENT *dClient = ((CLIENT *)hSocket);
+	dClient->Close();
+	delete dClient;
+	dClient = NULL;
+	return 0;
 }
 extern "C" __declspec(dllexport) int __stdcall socket_client_send_async(HANDLE hSocket, char *data, int size)
 {
@@ -1136,98 +1117,60 @@ extern "C" __declspec(dllexport) int __stdcall socket_client_send_sync(HANDLE hS
 {
 	return ((CLIENT *)hSocket)->send_sync(data, size);
 }
-
-extern "C" __declspec(dllexport) int __stdcall socket_client_close(HANDLE hSocket)
-{
-	return ((CLIENT *)hSocket)->Close();
-}
-
 extern "C" __declspec(dllexport) int __stdcall socket_client_get(HANDLE hSocket)
 {
 	return ((CLIENT *)hSocket)->get_socket();
 }
 
-// void __stdcall ServerCallback(HANDLE Server, SOCKET so, int type, char *data, int size)
-// {
-// 	if (type == 1)
-// 	{
-// 		printf("ServerCallback  Connect \n");
 
-// 		// Sending 70MB of data
-
-// 		int totalBytesToSend = 1024 * 1024 * 10;
-
-// 		char *sendData = (char *)malloc(totalBytesToSend);
-// 		if (sendData == NULL)
-// 		{
-// 			printf("Failed to allocate memory for sendData\n");
-// 			return;
-// 		}
-
-// 		memset(sendData, 'A', totalBytesToSend);
-// 		// Fill with 'A's for demonstration
-
-// 		socket_server_send_async(Server, so, sendData, totalBytesToSend);
-
-// 		free(sendData);
-// 	}
-// 	else if (type == 2)
-// 	{
-
-// 		// printf("Received data: %.*s\n", size, data);
-// 		printf("Received data: %d\n", size);
-// 	}
-// }
-
-// void __stdcall ClientCallback(HANDLE Client, SOCKET so, int type, char *data, int size)
-// {
-// 	if (type == 1)
-// 	{
-// 		printf("ClientCallback  Connect \n");
-
-// 		int totalBytesToSend = 1024 * 1024 * 10;
-
-// 		char *sendData = (char *)malloc(totalBytesToSend);
-// 		if (sendData == NULL)
-// 		{
-// 			printf("Failed to allocate memory for sendData\n");
-// 			return;
-// 		}
-
-// 		memset(sendData, 'B', totalBytesToSend);
-
-// 		socket_client_send_async(Client, sendData, totalBytesToSend);
-
-// 		free(sendData);
-// 	}
-// 	else if (type == 2)
-// 	{
-
-// 		// printf("Received data: %.*s\n", size, data);
-// 		printf("Received data: %d\n", size);
-// 	}
-// }
-// int __stdcall main()
-// {
-// 	if (socket_init(ServerCallback, ClientCallback) == 0)
-// 	{
-// 		SERVER *s = new SERVER;
-// 		printf("S %d \n", s->Init((char *)"0.0.0.0", 8800, 0));
-// 		CLIENT *c = new CLIENT;
-// 		printf("C %d \n", c->Init((char *)"127.0.0.1", 8800, 0, 30));
-// 		Sleep(1000 * 60 * 60 * 30);
-// 	}
-// 	return 0;
-// }
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved)
 {
 	switch (ul_reason_for_call)
 	{
 	case DLL_PROCESS_ATTACH:
+		break;
 	case DLL_THREAD_ATTACH:
+		break;
 	case DLL_THREAD_DETACH:
+		break;
 	case DLL_PROCESS_DETACH:
 		break;
 	}
 	return TRUE;
+}
+
+
+void __stdcall callback(HANDLE Socket, SOCKET so, int type, char *data, int size)
+{
+
+	switch (type)
+	{
+	case 1:
+		if (hServer == Socket)
+		{
+			char sendData[] = "AAAAAAAAAAAAAAAA";
+			socket_server_send_async(Socket, so, sendData, sizeof(sendData));
+		}
+		if (hClient == Socket)
+		{
+			char sendData[] = "AAAAAAAAAAAAAAAA";
+			socket_client_send_async(Socket, sendData, sizeof(sendData));
+		}
+		break;
+	case 2:
+		printf("hServer Received data: %.*s\n", size, data);
+		break;
+	}
+}
+
+int main()
+{
+	if (socket_init(callback) == 0)
+	{
+		hServer = (HANDLE)socket_server((char *)"0.0.0.0", 8800, 0);
+		hClient = (HANDLE)socket_client((char *)"127.0.0.1", 8800, 0, 3000);
+		printf("%s\n", "IS OK");
+		Sleep(1000 * 60 * 60 * 30);
+	}
+	return 0;
 }

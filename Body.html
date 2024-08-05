@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <title>view</title>
+    <link rel="stylesheet" href="/static/pintuer.css">
+    <script type="text/javascript" src="/static/vue.js"></script>
+    <style>
+        html,body {
+/*        overflow: hidden;*/
+        height: 100%;
+        background: #EEE;
+        #user-select: none;
+        }
+</style>
+</head>
+
+<body>
+    <div id="app" class="layout">
+        <div class="padding">
+            <div class="line-middle">
+                <div class="x3">
+                    <div class="border padding" style="height: 480px;overflow: auto;">
+                        <div  v-for="item in User">
+                            <div class="border padding">{{item}}</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="x9">
+                    <div class="line border padding" style="height: 480px;overflow: auto;">
+                        <div v-for="item in list" >
+                            <div class="text-break">{{item}}</div>
+                        </div>
+                    </div>
+                    <div class="line margin-top">
+                        <form action="" class="form" method="post" onsubmit="return false;">
+                            <div class="line-small">
+                                <div class="x9"><input v-model="data" class="input sendMessage" type="text"></div>
+                                <div class="x3"><button class="button x12" @click="newMessage()">newMessage</button></div>
+                            </div>
+                            
+                        </form>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+<script type="text/javascript">
+const app = new Vue({
+    el: '#app',
+    data: {
+        User:[],
+        list: [],
+        Socket:null,
+        data:' WinSocket QQ群 965120751 ',
+        ID:null,
+    },
+    mounted: function() {
+    this.ID = this.generateRandomID(10)
+      this.newSocket()
+    },
+    watch: {
+
+    },
+    methods: {
+         generateRandomID:function(length) {
+            var characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+            // var characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+            var result = '';
+            for (var i = 0; i < length; i++) {
+                var randomIndex = Math.floor(Math.random() * characters.length);
+                result += characters.charAt(randomIndex);
+            }
+            return result;
+        },
+        newSocket: function() {
+            const that = this;
+            this.Socket = new WebSocket("ws://127.0.0.1/echo");
+            this.Socket.onopen = function()  {
+               that.Socket.send(JSON.stringify({"type":'User','User':that.ID}))
+            };
+            this.Socket.onmessage = function(event) {
+                that.list.push(event.data)
+            };
+            this.Socket.onclose = function() {
+
+            };
+        },
+        newMessage:function(){
+            this.Socket.send(this.data)
+            this.data = ""
+
+        }
+    }
+})
+
+
+</script>
+
+</html>
